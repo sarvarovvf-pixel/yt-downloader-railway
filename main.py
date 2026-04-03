@@ -54,14 +54,15 @@ def download():
 
     try:
         cmd = [
-    "yt-dlp",
-    "-f", "bestvideo[ext=mp4][filesize<900M]+bestaudio[ext=m4a]/best[ext=mp4][filesize<900M]/best[filesize<900M]",
-    "--merge-output-format", "mp4",
-    "-o", output_path,
-    "--no-playlist",
-    "--js-runtimes", f"node:{node_path}",
-    url
-]
+            "yt-dlp",
+            "-f", "bestvideo[ext=mp4][filesize<900M]+bestaudio[ext=m4a]/best[ext=mp4][filesize<900M]/best[filesize<900M]",
+            "--merge-output-format", "mp4",
+            "-o", output_path,
+            "--no-playlist",
+            "--cookies", COOKIES_PATH,
+            "--js-runtimes", f"node:{node_path}",
+            url
+        ]
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
 
         if result.returncode != 0:
@@ -165,7 +166,6 @@ def upload_to_vk():
             "--merge-output-format", "mp4",
             "-o", output_path,
             "--no-playlist",
-            "--cookies", COOKIES_PATH,
             "--js-runtimes", f"node:{node_path}",
             url
         ]
