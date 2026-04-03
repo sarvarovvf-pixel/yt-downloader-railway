@@ -24,9 +24,17 @@ def cleanup_file(path, delay=300):
     Thread(target=_delete, daemon=True).start()
 
 
+def find_node():
+    for path in ["/usr/bin/node", "/usr/local/bin/node", "/usr/bin/nodejs"]:
+        if os.path.exists(path):
+            return path
+    return "node"
+
+
 @app.route("/health", methods=["GET"])
 def health():
-    return jsonify({"status": "ok"})
+    node_path = find_node()
+    return jsonify({"status": "ok", "node": node_path})
 
 
 @app.route("/download", methods=["POST"])
@@ -42,6 +50,7 @@ def download():
     url = data["url"]
     file_id = str(uuid.uuid4())[:8]
     output_path = os.path.join(DOWNLOAD_DIR, f"{file_id}.mp4")
+    node_path = find_node()
 
     try:
         cmd = [
@@ -51,8 +60,7 @@ def download():
             "-o", output_path,
             "--no-playlist",
             "--cookies", COOKIES_PATH,
-            "--extractor-args", "youtube:player_client=tv_embedded,web",
-            "--no-check-certificate",
+            "--js-runtimes", f"node:{node_path}",
             url
         ]
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
@@ -66,7 +74,8 @@ def download():
                 "error": "Download failed",
                 "stdout": result.stdout[-2000:],
                 "stderr": result.stderr[-2000:],
-                "returncode": result.returncode
+                "returncode": result.returncode,
+                "node_path": node_path
             }), 500
 
         if not os.path.exists(output_path):
@@ -75,7 +84,7 @@ def download():
                     output_path = os.path.join(DOWNLOAD_DIR, f)
                     break
             else:
-                return jsonify({"error": "File not found", "stderr": result.stderr[-1000:]}), 500
+                return jsonify({"error": "File not found"}), 500
 
         cleanup_file(output_path)
 
@@ -103,6 +112,7 @@ def info():
         return jsonify({"error": "url is required"}), 400
 
     url = data["url"]
+    node_path = find_node()
 
     try:
         cmd = [
@@ -110,6 +120,7 @@ def info():
             "--dump-json",
             "--no-playlist",
             "--cookies", COOKIES_PATH,
+            "--js-runtimes", f"node:{node_path}",
             url
         ]
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
