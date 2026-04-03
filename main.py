@@ -203,6 +203,62 @@ def upload_to_vk():
         return jsonify({"error": str(e)}), 500
 
 
+@app.route("/set_thumbnail", methods=["POST"])
+def set_thumbnail():
+    auth = request.headers.get("X-API-Key")
+    if auth != API_KEY:
+        return jsonify({"error": "Unauthorized"}), 401
+
+    data = request.json
+    vk_token = data.get("vk_token")
+    video_id = data.get("video_id")
+    owner_id = data.get("owner_id")
+    thumbnail_url = data.get("thumbnail_url")
+
+    try:
+        import requests as req
+        import json
+
+        thumb_response = req.get(thumbnail_url, timeout=30)
+        thumb_data = thumb_response.content
+
+        upload_server = req.get(
+            "https://api.vk.com/method/video.getThumbUploadUrl",
+            params={
+                "access_token": vk_token,
+                "video_id": video_id,
+                "owner_id": owner_id,
+                "v": "5.131"
+            }
+        ).json()
+
+        upload_url = upload_server["response"]["upload_url"]
+
+        upload_result = req.post(
+            upload_url,
+            files={"file": ("thumb.jpg", thumb_data, "image/jpeg")}
+        ).json()
+
+        save_result = req.post(
+            "https://api.vk.com/method/video.saveUploadedThumb",
+            params={
+                "access_token": vk_token,
+                "owner_id": owner_id,
+                "v": "5.131",
+                "thumb_json": json.dumps({
+                    "server": upload_result.get("server"),
+                    "photo": upload_result.get("sha"),
+                    "hash": upload_result.get("hash")
+                })
+            }
+        ).json()
+
+        return jsonify({"result": save_result})
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
     app.run(host="0.0.0.0", port=port)
