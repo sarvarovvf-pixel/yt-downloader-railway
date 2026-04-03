@@ -50,6 +50,7 @@ def download():
             "--merge-output-format", "mp4",
             "-o", output_path,
             "--no-playlist",
+            "--js-runtimes", "node",
             "--cookies", COOKIES_PATH,
             url
         ]
@@ -107,6 +108,7 @@ def info():
             "yt-dlp",
             "--dump-json",
             "--no-playlist",
+            "--js-runtimes", "node",
             "--cookies", COOKIES_PATH,
             url
         ]
