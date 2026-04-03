@@ -50,8 +50,8 @@ def download():
             "--merge-output-format", "mp4",
             "-o", output_path,
             "--no-playlist",
-            "--js-runtimes", "node",
             "--cookies", COOKIES_PATH,
+            "--extractor-args", "youtube:player_client=web,default",
             url
         ]
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
@@ -108,7 +108,6 @@ def info():
             "yt-dlp",
             "--dump-json",
             "--no-playlist",
-            "--js-runtimes", "node",
             "--cookies", COOKIES_PATH,
             url
         ]
