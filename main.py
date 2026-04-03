@@ -15,7 +15,6 @@ os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 
 
 def cleanup_file(path, delay=300):
-    """Удаляет файл через 5 минут после отправки"""
     def _delete():
         time.sleep(delay)
         try:
@@ -32,7 +31,6 @@ def health():
 
 @app.route("/download", methods=["POST"])
 def download():
-    # Проверка API ключа
     auth = request.headers.get("X-API-Key")
     if auth != API_KEY:
         return jsonify({"error": "Unauthorized"}), 401
@@ -46,24 +44,38 @@ def download():
     output_path = os.path.join(DOWNLOAD_DIR, f"{file_id}.mp4")
 
     try:
-        # Скачиваем видео через yt-dlp
         cmd = [
             "yt-dlp",
-            "-f", "bestvideo[ext=mp4][filesize<900M]+bestaudio[ext=m4a]/best[ext=mp4][filesize<900M]/best",
+            "-f", "bestvideo[ext=mp4][filesize<900M]+bestaudio[ext=m4a]/best[ext=mp4][filesize<900M]/best[filesize<900M]",
             "--merge-output-format", "mp4",
             "-o", output_path,
             "--no-playlist",
+            "--no-check-certificate",
+            "--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
             url
         ]
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
 
+        print(f"STDOUT: {result.stdout}")
+        print(f"STDERR: {result.stderr}")
+        print(f"Return code: {result.returncode}")
+
         if result.returncode != 0:
-            return jsonify({"error": "Download failed", "details": result.stderr}), 500
+            return jsonify({
+                "error": "Download failed",
+                "stdout": result.stdout[-2000:],
+                "stderr": result.stderr[-2000:],
+                "returncode": result.returncode
+            }), 500
 
         if not os.path.exists(output_path):
-            return jsonify({"error": "File not found after download"}), 500
+            for f in os.listdir(DOWNLOAD_DIR):
+                if f.startswith(file_id):
+                    output_path = os.path.join(DOWNLOAD_DIR, f)
+                    break
+            else:
+                return jsonify({"error": "File not found after download", "stderr": result.stderr[-1000:]}), 500
 
-        # Планируем удаление файла через 5 минут
         cleanup_file(output_path)
 
         return send_file(
@@ -74,59 +86,13 @@ def download():
         )
 
     except subprocess.TimeoutExpired:
-        return jsonify({"error": "Download timeout"}), 504
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
-
-@app.route("/thumbnail", methods=["POST"])
-def thumbnail():
-    """Скачивает только обложку видео"""
-    auth = request.headers.get("X-API-Key")
-    if auth != API_KEY:
-        return jsonify({"error": "Unauthorized"}), 401
-
-    data = request.json
-    if not data or "url" not in data:
-        return jsonify({"error": "url is required"}), 400
-
-    url = data["url"]
-    file_id = str(uuid.uuid4())[:8]
-    output_path = os.path.join(DOWNLOAD_DIR, f"{file_id}.jpg")
-
-    try:
-        cmd = [
-            "yt-dlp",
-            "--write-thumbnail",
-            "--skip-download",
-            "--convert-thumbnails", "jpg",
-            "-o", os.path.join(DOWNLOAD_DIR, file_id),
-            url
-        ]
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
-
-        if result.returncode != 0:
-            return jsonify({"error": "Thumbnail download failed", "details": result.stderr}), 500
-
-        if not os.path.exists(output_path):
-            return jsonify({"error": "Thumbnail not found"}), 500
-
-        cleanup_file(output_path)
-
-        return send_file(
-            output_path,
-            mimetype="image/jpeg",
-            as_attachment=True,
-            download_name=f"{file_id}.jpg"
-        )
-
+        return jsonify({"error": "Download timeout (10 min exceeded)"}), 504
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
 
 @app.route("/info", methods=["POST"])
 def info():
-    """Получает метаданные видео без скачивания"""
     auth = request.headers.get("X-API-Key")
     if auth != API_KEY:
         return jsonify({"error": "Unauthorized"}), 401
@@ -138,16 +104,11 @@ def info():
     url = data["url"]
 
     try:
-        cmd = [
-            "yt-dlp",
-            "--dump-json",
-            "--no-playlist",
-            url
-        ]
+        cmd = ["yt-dlp", "--dump-json", "--no-playlist", url]
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
 
         if result.returncode != 0:
-            return jsonify({"error": "Failed to get info", "details": result.stderr}), 500
+            return jsonify({"error": "Failed to get info", "stderr": result.stderr[-1000:]}), 500
 
         import json
         info_data = json.loads(result.stdout)
