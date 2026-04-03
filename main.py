@@ -240,11 +240,14 @@ def set_thumbnail():
         ).json()
 
         save_result = req.post(
-            "https://api.vk.com/method/video.saveUploadedThumb",
+            "https://api.vk.com/method/video.edit",
             params={
                 "access_token": vk_token,
                 "owner_id": owner_id,
+                "video_id": video_id,
                 "v": "5.131",
+            },
+            data={
                 "thumb_json": json.dumps({
                     "server": upload_result.get("server"),
                     "photo": upload_result.get("sha"),
