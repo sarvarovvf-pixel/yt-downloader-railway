@@ -51,7 +51,7 @@ def download():
             "-o", output_path,
             "--no-playlist",
             "--cookies", COOKIES_PATH,
-            "--extractor-args", "youtube:player_client=web,default",
+            "--extractor-args", "youtube:player_client=android,web",
             url
         ]
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
@@ -74,7 +74,7 @@ def download():
                     output_path = os.path.join(DOWNLOAD_DIR, f)
                     break
             else:
-                return jsonify({"error": "File not found after download", "stderr": result.stderr[-1000:]}), 500
+                return jsonify({"error": "File not found", "stderr": result.stderr[-1000:]}), 500
 
         cleanup_file(output_path)
 
@@ -86,7 +86,7 @@ def download():
         )
 
     except subprocess.TimeoutExpired:
-        return jsonify({"error": "Download timeout (10 min exceeded)"}), 504
+        return jsonify({"error": "Timeout"}), 504
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -109,12 +109,13 @@ def info():
             "--dump-json",
             "--no-playlist",
             "--cookies", COOKIES_PATH,
+            "--extractor-args", "youtube:player_client=android,web",
             url
         ]
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
 
         if result.returncode != 0:
-            return jsonify({"error": "Failed to get info", "stderr": result.stderr[-1000:]}), 500
+            return jsonify({"error": "Failed", "stderr": result.stderr[-1000:]}), 500
 
         import json
         info_data = json.loads(result.stdout)
@@ -124,8 +125,6 @@ def info():
             "description": info_data.get("description"),
             "thumbnail": info_data.get("thumbnail"),
             "duration": info_data.get("duration"),
-            "filesize_approx": info_data.get("filesize_approx"),
-            "upload_date": info_data.get("upload_date"),
             "video_id": info_data.get("id"),
         })
 
