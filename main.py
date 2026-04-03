@@ -51,7 +51,8 @@ def download():
             "-o", output_path,
             "--no-playlist",
             "--cookies", COOKIES_PATH,
-            "--extractor-args", "youtube:player_client=android,web",
+            "--extractor-args", "youtube:player_client=tv_embedded,web",
+            "--no-check-certificate",
             url
         ]
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
@@ -109,7 +110,6 @@ def info():
             "--dump-json",
             "--no-playlist",
             "--cookies", COOKIES_PATH,
-            "--extractor-args", "youtube:player_client=android,web",
             url
         ]
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
