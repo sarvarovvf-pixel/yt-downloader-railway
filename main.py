@@ -1,7 +1,6 @@
 import os
 import uuid
 import subprocess
-import requests
 from flask import Flask, request, jsonify, send_file
 from threading import Thread
 import time
@@ -10,6 +9,7 @@ app = Flask(__name__)
 
 DOWNLOAD_DIR = "/tmp/downloads"
 API_KEY = os.environ.get("API_KEY", "secret123")
+COOKIES_PATH = "/app/cookies.txt"
 
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 
@@ -50,8 +50,7 @@ def download():
             "--merge-output-format", "mp4",
             "-o", output_path,
             "--no-playlist",
-            "--no-check-certificate",
-            "--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "--cookies", COOKIES_PATH,
             url
         ]
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
@@ -104,7 +103,13 @@ def info():
     url = data["url"]
 
     try:
-        cmd = ["yt-dlp", "--dump-json", "--no-playlist", url]
+        cmd = [
+            "yt-dlp",
+            "--dump-json",
+            "--no-playlist",
+            "--cookies", COOKIES_PATH,
+            url
+        ]
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
 
         if result.returncode != 0:
