@@ -219,44 +219,60 @@ def set_thumbnail():
         import requests as req
         import json
 
-        thumb_response = req.get(thumbnail_url, timeout=30)
+        # Шаг 1: скачиваем thumbnail с YouTube
+        thumb_response = req.get(thumbnail_url, timeout=30, headers={
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+        })
+        if thumb_response.status_code != 200:
+            return jsonify({
+                "error": "Failed to download thumbnail",
+                "status_code": thumb_response.status_code
+            }), 500
         thumb_data = thumb_response.content
 
-        upload_server = req.get(
+        # Шаг 2: получаем upload URL для обложки видео
+        get_url_resp = req.post(
             "https://api.vk.com/method/video.getThumbUploadUrl",
-            params={
+            data={
                 "access_token": vk_token,
-                "video_id": video_id,
                 "owner_id": owner_id,
-                "v": "5.131"
+                "v": "5.199"
             }
         ).json()
 
-        upload_url = upload_server["response"]["upload_url"]
+        if "error" in get_url_resp:
+            return jsonify({
+                "error": "video.getThumbUploadUrl failed",
+                "vk_error": get_url_resp["error"]
+            }), 500
 
-        upload_result = req.post(
+        upload_url = get_url_resp["response"]["upload_url"]
+
+        # Шаг 3: загружаем файл обложки на сервер VK
+        upload_resp = req.post(
             upload_url,
             files={"file": ("thumb.jpg", thumb_data, "image/jpeg")}
-        ).json()
+        )
+        upload_json = upload_resp.json()
 
-        save_result = req.post(
-            "https://api.vk.com/method/video.edit",
-            params={
+        # Шаг 4: сохраняем обложку и привязываем к видео
+        save_resp = req.post(
+            "https://api.vk.com/method/video.saveUploadedThumb",
+            data={
                 "access_token": vk_token,
                 "owner_id": owner_id,
                 "video_id": video_id,
-                "v": "5.131",
-            },
-            data={
-                "thumb_json": json.dumps({
-                    "server": upload_result.get("server"),
-                    "photo": upload_result.get("sha"),
-                    "hash": upload_result.get("hash")
-                })
+                "thumb_json": json.dumps(upload_json),
+                "set_thumb": 1,
+                "v": "5.199"
             }
         ).json()
 
-        return jsonify({"result": save_result})
+        return jsonify({
+            "get_url_resp": get_url_resp,
+            "upload_result": upload_json,
+            "save_result": save_resp
+        })
 
     except Exception as e:
         return jsonify({"error": str(e)}), 500
