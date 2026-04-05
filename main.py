@@ -7,6 +7,40 @@ from threading import Thread
 import time
 import requests as req
 
+ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY")
+
+
+def generate_russian_title(english_title):
+    """Генерируем русский заголовок через Claude API"""
+    try:
+        response = req.post(
+            "https://api.anthropic.com/v1/messages",
+            headers={
+                "x-api-key": ANTHROPIC_API_KEY,
+                "anthropic-version": "2023-06-01",
+                "content-type": "application/json"
+            },
+            json={
+                "model": "claude-sonnet-4-20250514",
+                "max_tokens": 200,
+                "messages": [{
+                    "role": "user",
+                    "content": f"""Придумай цепляющий русский заголовок для видео на основе английского заголовка. 
+Заголовок должен быть живым, разговорным, подходящим для русскоязычной аудитории ВКонтакте.
+Не переводи дословно, адаптируй под русский стиль.
+Верни только заголовок, без кавычек и пояснений.
+
+Английский заголовок: {english_title}"""
+                }]
+            },
+            timeout=30
+        )
+        data = response.json()
+        return data["content"][0]["text"].strip()
+    except Exception as e:
+        print(f"Claude API error: {e}")
+        return english_title
+
 app = Flask(__name__)
 
 DOWNLOAD_DIR = "/tmp/downloads"
@@ -103,6 +137,9 @@ def upload_to_vk():
     description = data.get("description", "")
     thumb_url = data.get("thumb_url")
 
+    # --- Генерируем русский заголовок ---
+    vk_title_ru = generate_russian_title(title)
+
     file_id = str(uuid.uuid4())[:8]
     output_path = os.path.join(DOWNLOAD_DIR, f"{file_id}.mp4")
 
@@ -131,7 +168,7 @@ def upload_to_vk():
         vk_save = req.post("https://api.vk.com/method/video.save", data={
             "access_token": vk_token,
             "group_id": group_id,
-            "name": title,
+            "name": vk_title_ru,
             "description": description,
             "v": "5.199"
         }).json()
@@ -194,6 +231,7 @@ def upload_to_vk():
             "success": True,
             "video_id": video_id,
             "owner_id": owner_id,
+            "vk_title_ru": vk_title_ru,
             "thumb_result": thumb_result
         })
 
