@@ -60,6 +60,7 @@ def cleanup_file(path, delay=300):
 
 
 def download_via_rapidapi(youtube_url, output_path):
+    # Шаг 1: инициируем скачивание
     response = req.get(
         "https://youtube-info-download-api.p.rapidapi.com/ajax/download.php",
         headers={
@@ -78,19 +79,36 @@ def download_via_rapidapi(youtube_url, output_path):
     )
 
     data = response.json()
-    print(f"RapidAPI response: {data}")
+    print(f"RapidAPI initial response: {data}")
+
+    if not data.get("success"):
+        raise Exception(f"RapidAPI error: {data}")
+
+    # Шаг 2: polling по progress_url
+    progress_url = data.get("progress_url")
+    if not progress_url:
+        raise Exception(f"No progress_url in response: {data}")
 
     download_url = None
-    if "url" in data:
-        download_url = data["url"]
-    elif "download_url" in data:
-        download_url = data["download_url"]
-    elif "link" in data:
-        download_url = data["link"]
+    last_progress = None
+    for attempt in range(30):
+        time.sleep(10)
+        last_progress = req.get(progress_url, timeout=30).json()
+        print(f"Progress attempt {attempt + 1}: {last_progress}")
+
+        if last_progress.get("download_url"):
+            download_url = last_progress["download_url"]
+            break
+        elif last_progress.get("url"):
+            download_url = last_progress["url"]
+            break
+        elif last_progress.get("status") == "error":
+            raise Exception(f"RapidAPI processing error: {last_progress}")
 
     if not download_url:
-        raise Exception(f"No download URL in response: {data}")
+        raise Exception(f"Download URL not ready after polling: {last_progress}")
 
+    # Шаг 3: скачиваем файл
     with req.get(download_url, stream=True, timeout=900) as r:
         r.raise_for_status()
         with open(output_path, "wb") as f:
