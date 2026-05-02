@@ -119,6 +119,88 @@ def update_cookies():
     })
 
 
+# ==========================================
+# НОВЫЙ ЭНДПОИНТ: только скачать видео
+# ==========================================
+@app.route("/download_only", methods=["POST"])
+def download_only():
+    """Скачать видео с YouTube и вернуть ссылку на файл + русский заголовок"""
+    auth = request.headers.get("X-API-Key")
+    if auth != API_KEY:
+        return jsonify({"error": "Unauthorized"}), 401
+
+    data = request.json
+    if not data or "url" not in data:
+        return jsonify({"error": "url is required"}), 400
+
+    url = data["url"]
+    title = data.get("title", "")
+    generate_title = data.get("generate_title", True)
+
+    file_id = str(uuid.uuid4())[:8]
+    output_path = os.path.join(DOWNLOAD_DIR, f"{file_id}.mp4")
+
+    # --- Шаг 1: скачиваем видео ---
+    cmd = build_ytdlp_cmd(url, output_path)
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=900)
+
+    if result.returncode != 0:
+        return jsonify({
+            "error": "Download failed",
+            "stderr": result.stderr[-3000:],
+            "stdout": result.stdout[-1000:]
+        }), 500
+
+    # Ищем файл если имя изменилось
+    if not os.path.exists(output_path):
+        for f in os.listdir(DOWNLOAD_DIR):
+            if f.startswith(file_id):
+                output_path = os.path.join(DOWNLOAD_DIR, f)
+                break
+        else:
+            return jsonify({"error": "Файл не найден после скачивания"}), 500
+
+    file_size = os.path.getsize(output_path)
+    filename = os.path.basename(output_path)
+
+    # --- Шаг 2: генерим русский заголовок ---
+    vk_title_ru = title
+    if generate_title and title:
+        vk_title_ru = generate_russian_title(title)
+
+    # Файл живет 30 минут
+    cleanup_file(output_path, delay=1800)
+
+    # Формируем прямую ссылку на файл
+    base_url = request.host_url.rstrip("/")
+    file_url = f"{base_url}/files/{filename}"
+
+    return jsonify({
+        "success": True,
+        "file_url": file_url,
+        "filename": filename,
+        "file_size": file_size,
+        "title_original": title,
+        "title_ru": vk_title_ru
+    })
+
+
+@app.route("/files/<filename>", methods=["GET"])
+def serve_file(filename):
+    """Отдаем скачанный файл по прямой ссылке"""
+    # Защита от path traversal
+    safe_name = os.path.basename(filename)
+    file_path = os.path.join(DOWNLOAD_DIR, safe_name)
+
+    if not os.path.exists(file_path):
+        return jsonify({"error": "File not found"}), 404
+
+    return send_file(file_path, mimetype="video/mp4", as_attachment=True, download_name=safe_name)
+
+
+# ==========================================
+# СТАРЫЙ ЭНДПОИНТ: оставляем для совместимости
+# ==========================================
 @app.route("/upload_to_vk", methods=["POST"])
 def upload_to_vk():
     """Скачать с YouTube и загрузить в VK с превью"""
