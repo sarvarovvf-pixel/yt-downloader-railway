@@ -199,6 +199,60 @@ def serve_file(filename):
 
 
 # ==========================================
+# НОВЫЙ ЭНДПОИНТ: загрузить файл в S3 Postmypost
+# ==========================================
+@app.route("/upload_to_postmypost", methods=["POST"])
+def upload_to_postmypost():
+    """Загрузить скачанный файл в S3 Postmypost"""
+    auth = request.headers.get("X-API-Key")
+    if auth != API_KEY:
+        return jsonify({"error": "Unauthorized"}), 401
+
+    data = request.json
+    if not data:
+        return jsonify({"error": "JSON body required"}), 400
+
+    filename = data.get("filename")
+    s3_action = data.get("s3_action")
+    s3_fields = data.get("s3_fields")
+
+    if not filename or not s3_action or not s3_fields:
+        return jsonify({"error": "filename, s3_action, s3_fields required"}), 400
+
+    safe_name = os.path.basename(filename)
+    file_path = os.path.join(DOWNLOAD_DIR, safe_name)
+
+    if not os.path.exists(file_path):
+        return jsonify({"error": "File not found"}), 404
+
+    try:
+        # Формируем multipart form data с S3 полями
+        fields = {}
+        for field in s3_fields:
+            fields[field["key"]] = field["value"]
+
+        # Загружаем файл в S3
+        with open(file_path, "rb") as f:
+            files_data = {"file": (safe_name, f, "video/mp4")}
+            s3_resp = req.post(s3_action, data=fields, files=files_data, timeout=600)
+
+        if s3_resp.status_code in [200, 201, 204]:
+            return jsonify({
+                "success": True,
+                "s3_status": s3_resp.status_code
+            })
+        else:
+            return jsonify({
+                "error": "S3 upload failed",
+                "s3_status": s3_resp.status_code,
+                "s3_response": s3_resp.text[:1000]
+            }), 500
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+# ==========================================
 # СТАРЫЙ ЭНДПОИНТ: оставляем для совместимости
 # ==========================================
 @app.route("/upload_to_vk", methods=["POST"])
