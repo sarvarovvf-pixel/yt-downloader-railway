@@ -172,8 +172,8 @@ def download_only():
     cleanup_file(output_path, delay=1800)
 
     # Формируем прямую ссылку на файл
-    base_url = request.host_url.rstrip("/")
-    file_url = f"{base_url}/files/{filename}"
+base_url = request.host_url.rstrip("/").replace("http://", "https://")
+file_url = f"{base_url}/files/{filename}"
 
     return jsonify({
         "success": True,
