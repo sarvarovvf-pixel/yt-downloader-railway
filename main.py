@@ -8,10 +8,10 @@ import time
 import requests as req
 
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY")
+POSTMYPOST_API = "https://api.postmypost.io/v4.1"
 
 
 def generate_russian_title(english_title):
-    """Генерируем русский заголовок через Claude API"""
     try:
         response = req.post(
             "https://api.anthropic.com/v1/messages",
@@ -23,15 +23,7 @@ def generate_russian_title(english_title):
             json={
                 "model": "claude-sonnet-4-20250514",
                 "max_tokens": 200,
-                "messages": [{
-                    "role": "user",
-                    "content": f"""Придумай цепляющий русский заголовок для видео на основе английского заголовка. 
-Заголовок должен быть живым, разговорным, подходящим для русскоязычной аудитории ВКонтакте.
-Не переводи дословно, адаптируй под русский стиль.
-Верни только заголовок, без кавычек и пояснений.
-
-Английский заголовок: {english_title}"""
-                }]
+                "messages": [{"role": "user", "content": f"Придумай цепляющий русский заголовок для видео на основе английского заголовка. Заголовок должен быть живым, разговорным, подходящим для русскоязычной аудитории ВКонтакте. Не переводи дословно, адаптируй под русский стиль. Верни только заголовок, без кавычек и пояснений.\n\nАнглийский заголовок: {english_title}"}]
             },
             timeout=30
         )
@@ -41,12 +33,71 @@ def generate_russian_title(english_title):
         print(f"Claude API error: {e}")
         return english_title
 
+
+def upload_file_to_postmypost_s3(file_path, file_name, mime_type, project_id, pmp_token):
+    file_size = os.path.getsize(file_path) if isinstance(file_path, str) else len(file_path)
+    is_bytes = not isinstance(file_path, str)
+
+    init_resp = req.post(
+        f"{POSTMYPOST_API}/upload/init",
+        headers={"Authorization": f"Bearer {pmp_token}", "Content-Type": "application/json"},
+        json={"project_id": project_id, "name": file_name, "size": file_size},
+        timeout=30
+    ).json()
+
+    upload_id = init_resp.get("id")
+    s3_action = init_resp.get("action")
+    s3_fields = init_resp.get("fields")
+
+    if not upload_id or not s3_action or not s3_fields:
+        return {"error": "init_upload failed", "response": init_resp}
+
+    fields = {}
+    for field in s3_fields:
+        fields[field["key"]] = field["value"]
+
+    if is_bytes:
+        files_data = {"file": (file_name, file_path, mime_type)}
+    else:
+        f = open(file_path, "rb")
+        files_data = {"file": (file_name, f, mime_type)}
+
+    s3_resp = req.post(s3_action, data=fields, files=files_data, timeout=600)
+
+    if not is_bytes:
+        f.close()
+
+    if s3_resp.status_code not in [200, 201, 204]:
+        return {"error": "S3 upload failed", "s3_status": s3_resp.status_code}
+
+    req.post(
+        f"{POSTMYPOST_API}/upload/complete",
+        headers={"Authorization": f"Bearer {pmp_token}"},
+        params={"id": upload_id},
+        timeout=30
+    )
+
+    for attempt in range(20):
+        time.sleep(3)
+        status_resp = req.get(
+            f"{POSTMYPOST_API}/upload/status",
+            headers={"Authorization": f"Bearer {pmp_token}"},
+            params={"id": upload_id},
+            timeout=30
+        ).json()
+        file_id = status_resp.get("file_id")
+        if file_id:
+            return {"success": True, "file_id": file_id, "upload_id": upload_id}
+
+    return {"error": "Timeout waiting for file_id", "last_status": status_resp}
+
+
 app = Flask(__name__)
 
 DOWNLOAD_DIR = "/tmp/downloads"
 API_KEY = os.environ.get("API_KEY", "secret123")
 COOKIES_PATH = "/app/cookies.txt"
-PROXY = os.environ.get("PROXY_URL")  # http://user:pass@host:port
+PROXY = os.environ.get("PROXY_URL")
 
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 
@@ -78,15 +129,10 @@ def build_ytdlp_cmd(url, output_path):
         "--no-playlist",
         "--js-runtimes", f"node:{node_path}",
     ]
-
-    # Куки если файл существует и не пустой
     if os.path.exists(COOKIES_PATH) and os.path.getsize(COOKIES_PATH) > 0:
         cmd += ["--cookies", COOKIES_PATH]
-
-    # Прокси если задан
     if PROXY:
         cmd += ["--proxy", PROXY]
-
     cmd.append(url)
     return cmd
 
@@ -102,29 +148,18 @@ def health():
 
 @app.route("/update-cookies", methods=["POST"])
 def update_cookies():
-    """Обновить cookies.txt без передеплоя"""
     auth = request.headers.get("X-API-Key")
     if auth != API_KEY:
         return jsonify({"error": "Unauthorized"}), 401
-
     if "file" not in request.files:
-        return jsonify({"error": "Нет файла, передай file в multipart/form-data"}), 400
-
+        return jsonify({"error": "No file"}), 400
     file = request.files["file"]
     file.save(COOKIES_PATH)
-
-    return jsonify({
-        "success": True,
-        "size": os.path.getsize(COOKIES_PATH)
-    })
+    return jsonify({"success": True, "size": os.path.getsize(COOKIES_PATH)})
 
 
-# ==========================================
-# НОВЫЙ ЭНДПОИНТ: только скачать видео
-# ==========================================
-@app.route("/download_only", methods=["POST"])
-def download_only():
-    """Скачать видео с YouTube и вернуть ссылку на файл + русский заголовок"""
+@app.route("/download_and_publish", methods=["POST"])
+def download_and_publish():
     auth = request.headers.get("X-API-Key")
     if auth != API_KEY:
         return jsonify({"error": "Unauthorized"}), 401
@@ -135,12 +170,17 @@ def download_only():
 
     url = data["url"]
     title = data.get("title", "")
+    thumb_url = data.get("thumb_url")
     generate_title = data.get("generate_title", True)
+    pmp_token = data.get("pmp_token")
+    project_id = data.get("project_id")
+
+    if not pmp_token or not project_id:
+        return jsonify({"error": "pmp_token and project_id are required"}), 400
 
     file_id = str(uuid.uuid4())[:8]
     output_path = os.path.join(DOWNLOAD_DIR, f"{file_id}.mp4")
 
-    # --- Шаг 1: скачиваем видео ---
     cmd = build_ytdlp_cmd(url, output_path)
     result = subprocess.run(cmd, capture_output=True, text=True, timeout=900)
 
@@ -151,113 +191,55 @@ def download_only():
             "stdout": result.stdout[-1000:]
         }), 500
 
-    # Ищем файл если имя изменилось
     if not os.path.exists(output_path):
         for f in os.listdir(DOWNLOAD_DIR):
             if f.startswith(file_id):
                 output_path = os.path.join(DOWNLOAD_DIR, f)
                 break
         else:
-            return jsonify({"error": "Файл не найден после скачивания"}), 500
+            return jsonify({"error": "File not found after download"}), 500
 
-    file_size = os.path.getsize(output_path)
-    filename = os.path.basename(output_path)
-
-    # --- Шаг 2: генерим русский заголовок ---
-    vk_title_ru = title
+    title_ru = title
     if generate_title and title:
-        vk_title_ru = generate_russian_title(title)
+        title_ru = generate_russian_title(title)
 
-    # Файл живет 30 минут
-    cleanup_file(output_path, delay=1800)
+    video_name = f"{title_ru}.mp4" if title_ru else f"{file_id}.mp4"
+    video_result = upload_file_to_postmypost_s3(
+        output_path, video_name, "video/mp4", project_id, pmp_token
+    )
 
-    # Формируем прямую ссылку на файл
-    base_url = request.host_url.rstrip("/").replace("http://", "https://")
-    file_url = f"{base_url}/files/{filename}"
+    cleanup_file(output_path, delay=300)
+
+    if "error" in video_result:
+        return jsonify({"error": "Video upload failed", "details": video_result}), 500
+
+    video_file_id = video_result["file_id"]
+
+    thumb_file_id = None
+    if thumb_url:
+        try:
+            thumb_resp = req.get(thumb_url, timeout=30, headers={"User-Agent": "Mozilla/5.0"})
+            if thumb_resp.status_code == 200:
+                thumb_data = thumb_resp.content
+                thumb_result = upload_file_to_postmypost_s3(
+                    thumb_data, "thumbnail.jpg", "image/jpeg", project_id, pmp_token
+                )
+                if "file_id" in thumb_result:
+                    thumb_file_id = thumb_result["file_id"]
+        except Exception as e:
+            print(f"Thumbnail upload error: {e}")
 
     return jsonify({
         "success": True,
-        "file_url": file_url,
-        "filename": filename,
-        "file_size": file_size,
         "title_original": title,
-        "title_ru": vk_title_ru
+        "title_ru": title_ru,
+        "video_file_id": video_file_id,
+        "thumb_file_id": thumb_file_id
     })
 
 
-@app.route("/files/<filename>", methods=["GET"])
-def serve_file(filename):
-    """Отдаем скачанный файл по прямой ссылке"""
-    # Защита от path traversal
-    safe_name = os.path.basename(filename)
-    file_path = os.path.join(DOWNLOAD_DIR, safe_name)
-
-    if not os.path.exists(file_path):
-        return jsonify({"error": "File not found"}), 404
-
-    return send_file(file_path, mimetype="video/mp4", as_attachment=True, download_name=safe_name)
-
-
-# ==========================================
-# НОВЫЙ ЭНДПОИНТ: загрузить файл в S3 Postmypost
-# ==========================================
-@app.route("/upload_to_postmypost", methods=["POST"])
-def upload_to_postmypost():
-    """Загрузить скачанный файл в S3 Postmypost"""
-    auth = request.headers.get("X-API-Key")
-    if auth != API_KEY:
-        return jsonify({"error": "Unauthorized"}), 401
-
-    data = request.json
-    if not data:
-        return jsonify({"error": "JSON body required"}), 400
-
-    filename = data.get("filename")
-    s3_action = data.get("s3_action")
-    s3_fields = data.get("s3_fields")
-
-    if not filename or not s3_action or not s3_fields:
-        return jsonify({"error": "filename, s3_action, s3_fields required"}), 400
-
-    safe_name = os.path.basename(filename)
-    file_path = os.path.join(DOWNLOAD_DIR, safe_name)
-
-    if not os.path.exists(file_path):
-        return jsonify({"error": "File not found"}), 404
-
-    try:
-        # Формируем multipart form data с S3 полями
-        fields = {}
-        for field in s3_fields:
-            fields[field["key"]] = field["value"]
-
-        # Загружаем файл в S3
-        with open(file_path, "rb") as f:
-            files_data = {"file": (safe_name, f, "video/mp4")}
-            s3_resp = req.post(s3_action, data=fields, files=files_data, timeout=600)
-
-        if s3_resp.status_code in [200, 201, 204]:
-            return jsonify({
-                "success": True,
-                "s3_status": s3_resp.status_code
-            })
-        else:
-            return jsonify({
-                "error": "S3 upload failed",
-                "s3_status": s3_resp.status_code,
-                "s3_response": s3_resp.text[:1000]
-            }), 500
-
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
-
-# ==========================================
-# СТАРЫЙ ЭНДПОИНТ: оставляем для совместимости
-# ==========================================
 @app.route("/upload_to_vk", methods=["POST"])
 def upload_to_vk():
-    """Скачать с YouTube и загрузить в VK с превью"""
     auth = request.headers.get("X-API-Key")
     if auth != API_KEY:
         return jsonify({"error": "Unauthorized"}), 401
@@ -273,13 +255,11 @@ def upload_to_vk():
     description = data.get("description", "")
     thumb_url = data.get("thumb_url")
 
-    # --- Генерируем русский заголовок ---
     vk_title_ru = generate_russian_title(title)
 
     file_id = str(uuid.uuid4())[:8]
     output_path = os.path.join(DOWNLOAD_DIR, f"{file_id}.mp4")
 
-    # --- Шаг 1: скачиваем видео ---
     cmd = build_ytdlp_cmd(url, output_path)
     result = subprocess.run(cmd, capture_output=True, text=True, timeout=900)
 
@@ -290,23 +270,18 @@ def upload_to_vk():
             "stdout": result.stdout[-1000:]
         }), 500
 
-    # Ищем файл если имя изменилось
     if not os.path.exists(output_path):
         for f in os.listdir(DOWNLOAD_DIR):
             if f.startswith(file_id):
                 output_path = os.path.join(DOWNLOAD_DIR, f)
                 break
         else:
-            return jsonify({"error": "Файл не найден после скачивания"}), 500
+            return jsonify({"error": "File not found"}), 500
 
     try:
-        # --- Шаг 2: получаем upload URL от VK ---
         vk_save = req.post("https://api.vk.com/method/video.save", data={
-            "access_token": vk_token,
-            "group_id": group_id,
-            "name": vk_title_ru,
-            "description": description,
-            "v": "5.199"
+            "access_token": vk_token, "group_id": group_id,
+            "name": vk_title_ru, "description": description, "v": "5.199"
         }).json()
 
         if "error" in vk_save:
@@ -316,122 +291,38 @@ def upload_to_vk():
         video_id = vk_save["response"]["video_id"]
         owner_id = vk_save["response"]["owner_id"]
 
-        # --- Шаг 3: загружаем видео в VK ---
         with open(output_path, "rb") as f:
-            upload_resp = req.post(upload_url, files={"video_file": f}, timeout=600)
+            req.post(upload_url, files={"video_file": f}, timeout=600)
 
         cleanup_file(output_path)
 
-        # --- Шаг 4: превью если есть ---
         thumb_result = None
         if thumb_url:
             try:
-                thumb_resp = req.get(thumb_url, timeout=30, headers={
-                    "User-Agent": "Mozilla/5.0"
-                })
+                thumb_resp = req.get(thumb_url, timeout=30, headers={"User-Agent": "Mozilla/5.0"})
                 thumb_data = thumb_resp.content
-
-                get_thumb_url = req.post(
-                    "https://api.vk.com/method/video.getThumbUploadUrl",
-                    data={
-                        "access_token": vk_token,
-                        "owner_id": owner_id,
-                        "video_id": video_id,
-                        "v": "5.199"
-                    }
-                ).json()
-
+                get_thumb_url = req.post("https://api.vk.com/method/video.getThumbUploadUrl", data={
+                    "access_token": vk_token, "owner_id": owner_id, "video_id": video_id, "v": "5.199"
+                }).json()
                 if "response" in get_thumb_url:
                     thumb_upload_url = get_thumb_url["response"]["upload_url"]
-                    thumb_upload = req.post(
-                        thumb_upload_url,
-                        files={"file": ("thumb.jpg", thumb_data, "image/jpeg")}
-                    ).json()
-
-                    save_thumb = req.post(
-                        "https://api.vk.com/method/video.saveUploadedThumb",
-                        data={
-                            "access_token": vk_token,
-                            "owner_id": owner_id,
-                            "video_id": video_id,
-                            "thumb_json": json.dumps(thumb_upload),
-                            "set_thumb": 1,
-                            "v": "5.199"
-                        }
-                    ).json()
+                    thumb_upload = req.post(thumb_upload_url, files={"file": ("thumb.jpg", thumb_data, "image/jpeg")}).json()
+                    save_thumb = req.post("https://api.vk.com/method/video.saveUploadedThumb", data={
+                        "access_token": vk_token, "owner_id": owner_id, "video_id": video_id,
+                        "thumb_json": json.dumps(thumb_upload), "set_thumb": 1, "v": "5.199"
+                    }).json()
                     thumb_result = save_thumb
             except Exception as e:
                 thumb_result = {"error": str(e)}
 
         return jsonify({
-            "success": True,
-            "video_id": video_id,
-            "owner_id": owner_id,
-            "vk_title_ru": vk_title_ru,
-            "thumb_result": thumb_result
+            "success": True, "video_id": video_id, "owner_id": owner_id,
+            "vk_title_ru": vk_title_ru, "thumb_result": thumb_result
         })
-
     except subprocess.TimeoutExpired:
         return jsonify({"error": "Timeout"}), 504
     except Exception as e:
         cleanup_file(output_path)
-        return jsonify({"error": str(e)}), 500
-
-
-@app.route("/set_thumbnail", methods=["POST"])
-def set_thumbnail():
-    """Отдельный эндпоинт для установки превью"""
-    auth = request.headers.get("X-API-Key")
-    if auth != API_KEY:
-        return jsonify({"error": "Unauthorized"}), 401
-
-    data = request.json
-    vk_token = data.get("vk_token") or os.environ.get("VK_TOKEN")
-    video_id = data.get("video_id")
-    owner_id = data.get("owner_id")
-    thumbnail_url = data.get("thumbnail_url")
-
-    try:
-        thumb_resp = req.get(thumbnail_url, timeout=30, headers={"User-Agent": "Mozilla/5.0"})
-        thumb_data = thumb_resp.content
-
-        get_url_resp = req.post(
-            "https://api.vk.com/method/video.getThumbUploadUrl",
-            data={
-                "access_token": vk_token,
-                "owner_id": owner_id,
-                "video_id": video_id,
-                "v": "5.199"
-            }
-        ).json()
-
-        if "error" in get_url_resp:
-            return jsonify({"error": "getThumbUploadUrl failed", "vk_error": get_url_resp["error"]}), 500
-
-        upload_url = get_url_resp["response"]["upload_url"]
-        upload_resp = req.post(
-            upload_url,
-            files={"file": ("thumb.jpg", thumb_data, "image/jpeg")}
-        ).json()
-
-        save_resp = req.post(
-            "https://api.vk.com/method/video.saveUploadedThumb",
-            data={
-                "access_token": vk_token,
-                "owner_id": owner_id,
-                "video_id": video_id,
-                "thumb_json": json.dumps(upload_resp),
-                "set_thumb": 1,
-                "v": "5.199"
-            }
-        ).json()
-
-        return jsonify({
-            "upload_result": upload_resp,
-            "save_result": save_resp
-        })
-
-    except Exception as e:
         return jsonify({"error": str(e)}), 500
 
 
